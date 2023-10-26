@@ -1,0 +1,69 @@
+from sklearn.metrics import r2_score
+from pandas_datareader import DataReader
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import statsmodels.api as sm
+from itertools import product
+import pandas as pd
+from datetime import timedelta, date
+from collections import Counter
+import math
+from scipy.stats import ttest_rel
+from gurobipy import Model, GRB
+from gurobipy.solver import MIPGap, FeasibilityStatus, OptimalDualityRatio
+
+# Define input parameters
+start = "2021-07-31"
+end = "2021-12-31"
+tickers = ["AAPL", "GOOGL", "FB"]
+num_days = 56 # Number of trading days between start and end dates (approximately 9 months)
+lookback_period = int(math.sqrt(num_days)) # Length of lookback period (default: square root of total dataset length)
+rolling_window_size = int(np.floor(num_days / num_tickers)) # Size of moving window (default: floor of total dataset length divided by number of tickers)
+minimum_returns = -0.01 # Minimum annualized returns required for inclusion in portfolio
+maximum_correlation = 0.8 # Maximum acceptable level of correlation within portfolio
+sigma_threshold = 4 # Standard deviation threshold for excluding highly volatile assets from consideration
+alpha = 0.05 # Significance level for hypothesis testing
+beta = 1.96 # Critical value for 95% confidence interval
+
+# Function to retrieve historical stock prices
+def fetch_stock_prices():
+    """Retrieve historical stock prices for given list of ticker symbols.""" try:
+        df = pd.DataFrame()
+        for ticker in tickers:
+            stock_name = f"{ticker}.SH"
+            stock_df = pd.read_csv("https://query1.finance.yahoo.com/v7/finance/download/" + stock_name + ".HK?period1=" + str(pd.to_datetime(start).timestamp()) + "&period2=" + str(pd.to_datetime(end).timestamp()), index_col='date')
+            stock_df.dropna(inplace=True)
+            stock_df.reset_index(inplace=True)
+            stock_df.rename({'Adj Close': ticker}, axis=1, inplace=True)
+            if df.empty:
+                df = stock_df
+            else:
+                df = pd.merge(df, stock_df, left_on='date', right_on='date').fillna(method='ffill')
+        return df
+    except Exception as e:
+        print("Error:", e)
+
+# Load historical stock prices
+df = fetch_stock_prices()
+
+# Calculate daily returns for each ticker
+def calculate_daily_returns():
+    """Calculate daily returns for each ticker over specified period.""" # Drop missing values and shift data forward one day to align with convention for stock price changes (cumulative returns)
+    df = df.dropna().shift(-1)
+    
+    # Calculate percentage change in closing stock price
+    for col in df.columns:
+        df[col] = ((df[col].values - df[col].shift(1).values)/df[col].shift(1).values)*100
+        
+    return df
+
+# Load calculated daily returns dataframe
+df = calculate_daily_returns()
+
+# Convert dataframe to numpy array for faster computational speed
+df_arr = df.values
+
+# Determine number of unique pairs of stocks
+unique_pairs = round(((len(tickers)**2 - len(tickers))/2), 0)
+print("Number of unique pairs:", unique
