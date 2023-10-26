@@ -1,0 +1,83 @@
+import pandas as pd
+from numpy import nan
+from math import sqrt
+from gurobipy import Model, quicksum
+from gurobipy.solvers import MIPModel 
+
+# Load dataset using Pandas
+data_path = 'path/to/your/dataset.csv'
+df = pd.read_csv(data_path)
+
+# Clean and preprocess data
+# ... remove missing values, convert categorical columns to numeric ones, etc.
+
+# Define decision variables (X), continuous or binary
+num_vars = len(df.columns)
+x = [Variable("x{}".format(i+1), vtype=GRB.CONTINUOUS) for i in range(num_vars)]
+bv = []
+for j in df.index:
+    bv.append([BinaryVar('x{}'.format(j+1), name='{}_{}'.format(k+1, j+1)) for k in range(num_vars)])
+
+# Define objective function (f(X)) and constraints (g(X) <= h)
+obj = {}
+cons = {}
+for row in df.itertuples():
+    obj[row[3]] = (row[4]*sqrt((row['x1']**2 + row['x2']**2 + row['x3']**2))) / row[5]
+    cons[(row[1], row[2], row[3], "lower")] = row[1]*(row['x1']) + row[2]*(row['x2']) + row[3]*(row['x3']) <= row[5]
+    cons[(row[1], row[2], row[3], "upper")] = row[1]*(row[-1]) + row[2]*(row[-2]) + row[3]*(row[-3]) >= row[6]
+
+# Create a new Model object and add the relevant variables
+m = Model()
+m.setParam("OutputFlag", 0)
+for i, var in enumerate(x):
+    m.addVar(var)
+for j, vars in enumerate(bv):
+    for k, var in enumerate(vars):
+        m.addVar(var)
+
+# Define objective function
+m.setObjective(quicksum(obj[value] * value for value, _ in sorted(df.iterrows(), key=lambda r: r[3])))
+
+# Add constraints
+for i, constraint in enumerate(cons.items()):
+    lhs = sum([constraint[1][l][j] * x[l] for l, val in enumerate(constraint[1][:-1]) if constraint[1][l][j]])
+    rhs = constraint[1][-1]
+    m.addConstr(lhs <= rhs)
+    m.addConstr(lhs >= rhs)
+
+# Set up warm start functionality
+def optimize_with_warmstart(model, prev_sol):
+    model.Params.method = 2  # Specify dual simplex method
+    model.start = prev_sol  # Pass previous solution
+    
+    model.optimize()
+    return model.ObjVal
+
+# Run optimization with initial guess
+prev_sol = []
+for var in x:
+    prev_sol.append(var.X)
+
+result = optimize_with_warmstart(m, prev_sol)
+print(result)
+
+# Check if solution was obtained within acceptable bounds
+while True:
+    try:
+        m.optimize(timeLimit=60)
+        break
+    except TimeoutError:
+        print("Solution not achieved within given time limit.") num_cuts += m._feasibilityManager._getNumCuts()
+        print(f"Added {len(m.getChildren()) - len(m.getParents())} cuts")
+        # Update warm start for next iteration
+        prev_sol = [x.X for x in x]
+        
+    if m.status == GRB.OPTIMAL or m.status == GRB.INFEASIBLE:
+        break
+    elif m.status == GRB.UNBOUND:
+        continue
+    else:
+        raise ValueError("Invalid solution status encountered")
+
+# Print the best solution found so far
+print(f"Best solution found after {num_cuts} cuts: {m.getAttr('X')}")
