@@ -1,83 +1,120 @@
 import pandas as pd
-from numpy import nan
+from datetime import date
+from gurobipy import *
 from math import sqrt
-from gurobipy import Model, quicksum
-from gurobipy.solvers import MIPModel 
 
-# Load dataset using Pandas
-data_path = 'path/to/your/dataset.csv'
-df = pd.read_csv(data_path)
+# Read CSV file containing input parameters and coefficients
+filename = 'input.csv'
+data = pd.read_csv(filename, parse_dates=True, index_col='Date')
 
-# Clean and preprocess data
-# ... remove missing values, convert categorical columns to numeric ones, etc.
+# Calculate standard deviation of each coefficient over past year
+window_size = 365
+today = date.today().timetuple()[0]
+one_year_ago = today - timedelta(days=365)
+std_devs = {}
+for coeff in ['a', 'b', 'c']:
+    window_coeffs = data.loc[:, f'{coeff}_i'].values[one_year_ago:today].reshape(-1, 1).mean(axis=0)[0]
+    std_devs[f'sigma_{coeff}'] = round(np.std(data.loc[:, f'{coeff}_i'].values[one_year_ago:today]), 4)
 
-# Define decision variables (X), continuous or binary
-num_vars = len(df.columns)
-x = [Variable("x{}".format(i+1), vtype=GRB.CONTINUOUS) for i in range(num_vars)]
+# Initialize lists of decision variables and binary variables
+x = []
 bv = []
-for j in df.index:
-    bv.append([BinaryVar('x{}'.format(j+1), name='{}_{}'.format(k+1, j+1)) for k in range(num_vars)])
-
-# Define objective function (f(X)) and constraints (g(X) <= h)
-obj = {}
 cons = {}
-for row in df.itertuples():
-    obj[row[3]] = (row[4]*sqrt((row['x1']**2 + row['x2']**2 + row['x3']**2))) / row[5]
-    cons[(row[1], row[2], row[3], "lower")] = row[1]*(row['x1']) + row[2]*(row['x2']) + row[3]*(row['x3']) <= row[5]
-    cons[(row[1], row[2], row[3], "upper")] = row[1]*(row[-1]) + row[2]*(row[-2]) + row[3]*(row[-3]) >= row[6]
+obj = {}
+for _, row in data.tail(1).iterrows():
+    # Generate variables for decision variables and binary variables
+    x_name = f'x{len(x)+1}'
+    bv_names = []
+    for i in range(3):
+        bv_name = f'b{i}_{len(bv)}'
+        bv_names.append(bv_name)
 
-# Create a new Model object and add the relevant variables
-m = Model()
-m.setParam("OutputFlag", 0)
-for i, var in enumerate(x):
-    m.addVar(var)
-for j, vars in enumerate(bv):
-    for k, var in enumerate(vars):
-        m.addVar(var)
+    # Store values for current row
+    value = int(row['Value'])
+    threshold = float(row['Threshold'])
+    lower_bound = float(row['Lower Bound'])
+    upper_bound = float(row['Upper Bound'])
+    coeff_a = float(row['a_i'])
+    coeff_b = float(row['b_i'])
+    coeff_c = float(row['c_i'])
+    coeff_d = std_devs[f'sigma_{row["Coef"]}']
+
+    # Assign starting value for variable
+    x.append(Variable(name=x_name, lb=lower_bound, ub=upper_bound))
+
+    # Generate binary variables
+    for i in range(3):
+        bv.append([BooleanVar("x{}".format(j), vtype="BINARY") for j in range(int(round(value/threshold*100)))])
+
+    # Calculate coefficients for quadratic term
+    obj[row['Index']] = 0
+    for i in range(3):
+        for j in range(3):
+            coeff = coeff_a * pow(x[len(x)-1], i)*pow(bv[-1][i][j], j) \
+                       + coeff_b * pow(x[len(x)-1], i+1)*pow(bv[-1][i][j], j+1) \
+                       + coeff_c * pow(x[len(x)-1], i+2)*pow(bv[-1][i][j], j+2) \
+                          
+                       if i > j else 0
+            obj[row['Index']] += coeff * pow(coeff_d, abs(i+j-3))
+            
+    # Constraint for number of conditions being met
+    for i in range(3):
+        cons[(row['Index'], 'bin', i)] = quicksum([val.x for val in bv[-1][i]]) == int(round(value/threshold*100))
+
+    # Constraints for lower bound and upper bound
+    cons[(row['Index'], 'lower', 'all')] = quicksum([x[len(x)-1], bv[-1][0][0], bv[-1][1][0], bv[-1][2][0]]) >= lower_bound
+    cons[(row['Index'], 'upper', 'all')] = quicksum([x[len(x)-1], bv[-1][0][-1], bv[-1][1][-1], bv[-1][2][-1]]) <= upper_bound
 
 # Define objective function
-m.setObjective(quicksum(obj[value] * value for value, _ in sorted(df.iterrows(), key=lambda r: r[3])))
+obj_term = quicksum([obj[index] * (index) for index, _ in sorted(data.itertuples(), key=lambda p: p.Index)])
 
-# Add constraints
-for i, constraint in enumerate(cons.items()):
-    lhs = sum([constraint[1][l][j] * x[l] for l, val in enumerate(constraint[1][:-1]) if constraint[1][l][j]])
-    rhs = constraint[1][-1]
-    m.addConstr(lhs <= rhs)
-    m.addConstr(lhs >= rhs)
+# Solve optimization problem using PuLP library
+from pulp import LpProblem, LpMinimize, LpBinary, LpContinuous
+prob = LpProblem('My Optimization Problem', LpMinimize)
 
-# Set up warm start functionality
-def optimize_with_warmstart(model, prev_sol):
-    model.Params.method = 2  # Specify dual simplex method
-    model.start = prev_sol  # Pass previous solution
+# Add constraints to model
+for idx, constraint in cons.items():
+    prob += constraint, 'constraint_%s' % idx
+
+# Create a dictionary to store results
+results = {idx: {'objective': None, 'binary': [], 'continuous': []} for idx in set([tuple(sorted(k[:2])) + tuple(['all'])) + [(row['Index'], 'lower'), (row['Index'], 'upper')) for k, v in cons.items() if isinstance(k[0], tuple) and len(set([elem[1] for elem in k])) == 1])]}
+
+# Iterate through all rows and solve subproblems
+for idx, row in data.tail(1).iterrows():
+    print(f"Solving for row {idx}")
+    solver = pywraplp.Solver('simplex', True)
     
-    model.optimize()
-    return model.ObjVal
-
-# Run optimization with initial guess
-prev_sol = []
-for var in x:
-    prev_sol.append(var.X)
-
-result = optimize_with_warmstart(m, prev_sol)
-print(result)
-
-# Check if solution was obtained within acceptable bounds
-while True:
-    try:
-        m.optimize(timeLimit=60)
-        break
-    except TimeoutError:
-        print("Solution not achieved within given time limit.") num_cuts += m._feasibilityManager._getNumCuts()
-        print(f"Added {len(m.getChildren()) - len(m.getParents())} cuts")
-        # Update warm start for next iteration
-        prev_sol = [x.X for x in x]
+    # Set up subproblem with current row's data
+    x_var_list = []
+    bv_lists = []
+    for i in range(3):
+        var_names = []
+        bin_vars = []
+        for j in range(int(round(row['Value'] / row['Threshold'] * 100))):
+            var_names.append(f'x{len(x) + 1}-{i}-{j}')
+            bin_vars.append(LpBinary(name=f'b{i}_{len(bv)}-{j}', lowBound=0, upBound=1))
+        x_var_list.append(LpContinuous(name=f'x{len(x) + 1}-{i}', lowBound=float(row['Lower Bound']), upBound=float(row['Upper Bound'])))
+        bv_lists.append(bin_vars)
         
-    if m.status == GRB.OPTIMAL or m.status == GRB.INFEASIBLE:
-        break
-    elif m.status == GRB.UNBOUND:
-        continue
-    else:
-        raise ValueError("Invalid solution status encountered")
-
-# Print the best solution found so far
-print(f"Best solution found after {num_cuts} cuts: {m.getAttr('X')}")
+    # Set up objective function based on current row's formula
+    obj_sub = sum([coeff * pow(coeff_d, abs(i + j - 3)) for i, j, coeff in zip(range(3), range(3), itertools.chain(*[[row['a_i']]] * 3, [[row['b_i']]], [[row['c_i']]]))])
+    for i in range(3):
+        for j in range(3):
+            coeff = coeff_a * pow(x_var_list[-1], i) * pow(bin_vars[-1][i][j], j) \
+                + coeff_b * pow(x_var_list[-1], i + 1) * pow(bin_vars[-1][i][j], j + 1) \
+                + coeff_c * pow(x_var_list[-1], i + 2) * pow(bin_vars[-1][i][j], j + 2) \
+                    if i > j else 0
+            obj_sub += coeff * pow(coeff_d, abs(i + j - 3))
+            
+# Add constraints to subproblem
+for idx_, constraint_ in enumerate(constraints.items()):
+    constraint, name = constraint_
+    if isinstance(constraint[0], tuple) and len(set([elem[1] for elem in constraint[0]])) == 1:
+        if constraint[0][0] == idx:
+            if constraint[0][1] == 'bin':
+                for j, b in enumerate(constraint[1]):
+                    solver.add(sum([bin_vars[i][j][n] for n, bv in enumerate(bin_vars[i][j])]) == b)
+            elif constraint[0][1] == 'lower':
+                solver.add(sum([x_var_list[i], *[bin_vars[i][j][n] for j, b in enumerate(bin_v...] for n, bv in enumerate(bin_vars[i][j])])) >= lower_bound
+elif constraint[0][1] == 'upper':
+solver.add(sum([x_var_list[i], *[bin_vars[i][j][n] for j, b in enumerate(bin_v...)
