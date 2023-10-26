@@ -1,0 +1,94 @@
+import pandas as pd
+from numpy import nan
+from scipy.sparse import lil_matrix
+from gurobipy import Model, GRB
+
+def read_data():
+    # Read input CSV file containing historical price data
+    try:
+        return pd.read_csv("stock_prices.csv", header=None).values
+    except FileNotFoundError:
+        print("Input file not found. Please provide a valid path.") raise SystemExit
+
+def clean_data(data):
+    """
+    Removes any rows with missing values (NAN) and returns a filtered data frame.
+    :param data: A two-dimensional array representing the input data.
+    :return: The cleaned data frame.
+    """
+    for row in reversed(range(len(data))):
+        if sum(np.isnan(data[row])) > 5:
+            del data[row]
+    return data
+
+def convert_to_percentage(data):
+    """
+    Converts all numerical data to percentage change by dividing each value by its predecessor.
+    :param data: A two-dimensional array representing the input data.
+    :return: The converted data frame.
+    """
+    data[:,-1] /= data[:,-2]
+    return data
+
+def normalize_data(data):
+    """
+    Normalizes the column vectors so that their elements sum up to one.
+    :param data: A two-dimensional array representing the normalized data.
+    :return: The normalized data frame.
+    """
+    num_rows = len(data)
+    totals = []
+    for col in range(num_rows):
+        total = sum(data[:,col])
+        if abs(total - num_rows) < eps:
+            continue
+        totals.append(total)
+        for row in range(num_rows):
+            data[row,col] /= total
+    return data
+
+def calculate_covariance_matrix(data):
+    """
+    Calculates the covariance matrix between columns based on the last n rows of data.
+    :param data: A two-dimensional array representing the cleaned data.
+    :return: The covariance matrix calculated over the last n rows of data.
+    """
+    num_cols = len(data[0])
+    num_rows = min(len(data), int(eps * len(data)))
+    coef_mat = lil_matrix((num_cols, num_cols))
+    cov_mat = np.zeros((num_cols, num_cols))
+    for rw in range(-int(eps * len(data)), 0):
+        for c in range(num_cols):
+            for d in range(num_cols):
+                coef_mat[(c,d)] += (data[rw+num_rows,c] - data[-1,c])*(data[rw+num_rows,d] - data[-1,d])
+        for c in range(num_cols):
+            cov_mat[c,:] -= data[-1,c]*data[-1,:]
+            for d in range(num_cols):
+                cov_mat[c,d] += coef_mat[(c,d)]/num_rows
+            cov_mat[c,:] *= (-1/num_rows) + 1/(num_rows**2)
+    return cov_mat
+
+def find_maximum_variance(cov_mat):
+    max_val = 0
+    idx = None
+    for i in range(len(cov_mat)):
+        if cov_mat[i][i] > max_val:
+            max_val = cov_mat[i][i]
+            idx = i
+    return idx
+
+def get_alpha_beta(mean_vec, std_dev_vec, cov_mat):
+    alpha = [round(np.random.normal(loc=mean_vec[idx], scale=std_dev_vec[idx]/sqrt(cov_mat[idx,idx])), 4) for idx in range(len(mean_vec))]
+    beta = []
+    while True:
+        beta = []
+        for j in range(len(mean_vec)):
+            x = round(np.random.uniform(-5, 5), 4)
+            y = 0
+            for k in range(len(mean_vec)):
+                if k != j:
+                    y += x*cov_mat[j,k]*alpha[k]
+            beta.append(x*inv_sigma + y)
+        if check_feasibility(beta):
+            break
+    return alpha, beta
