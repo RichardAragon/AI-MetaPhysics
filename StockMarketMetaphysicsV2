@@ -1,0 +1,79 @@
+import pandas as pd
+import numpy as np
+from scipy import stats
+import scipy.sparse as sp
+
+def load_data(filepath):
+    """Load CSV file containing historical stock prices into Pandas DataFrame.""" # Read in CSV file and convert it to a Pandas DataFrame
+    try:
+        df = pd.read_csv(filepath)
+    except FileNotFoundError:
+        print(f"File '{filepath}' not found.") sys.exit(1)
+    
+    # Check that all columns have valid names
+    for column in df.columns:
+        if not any(char.isalnum() or char == '-' for char in column):
+            raise ValueError(f"Invalid column header: {column}")
+            
+    # Filter out rows with missing values
+    df = df.dropna()
+    
+    # Set index to date column
+    df.set_index('Date', drop=True, inplace=True)
+    
+    # Convert 'Open', 'High', 'Low', and 'Close' columns from string format to float format
+    df['Open'] = pd.to_numeric(df['Open'], errors='coerce').fillna(method='ffill')
+    df['High'] = pd.to_numeric(df['High'], errors='coerce').fillna(method='ffill')
+    df['Low'] = pd.to_numeric(df['Low'], errors='coerce').fillna(method='ffill')
+    df['Close'] = pd.to_numeric(df['Close'], errors='coerce').fillna(method='ffill')
+    
+    # Calculate percentages by dividing by the previous close value and subtracting 1
+    df['Percentage Change'] = (df['Close'] / df['Close'].shift(1)) - 1
+    
+    return df
+
+def get_lookback_window_size(lookback_period):
+    """Return the appropriate lookback window size based on input lookback period.""" return int(np.ceil(365.25/float(lookback_period)))
+
+def calculate_rolling_window_standard_deviation(dataframe, window_size):
+    """Calculate standard deviation over specified rolling window size.""" start = 0
+    
+    stds = []
+    while start < len(dataframe):
+        end = min(start + window_size, len(dataframe))
+        roll = dataframe.loc[start:end]['Close'].values
+        stds.append(stats.sem(roll))
+        start += 1
+    
+    return np.array(stds)
+
+def filter_stocks(ticker_list, minimum_return):
+    """Filter list of tickers based on minimum return criteria""" filtered_tickers = []
+    for ticker in ticker_list:
+        if df[(df['Close'] > df[ticker].tail(1)[0]) & (df['Percentage Change'] > minimum_return)].shape[0]/len(df)>0.97:
+            filtered_tickers.append(ticker)
+    return filtered_tickers
+
+def calculate_minimum_correlation(correlation_matrix):
+    """Calculate minimum correlation coefficient based on inputs""" lowest_value = float("inf")
+    indices = set()
+    for row in correlation_matrix.tolist()[::-1]:
+        for val in row:
+            if math.isfinite(val) and val < lowest_value and (indices.intersection(set(range(len(row)))) == set() or all(math.isnan(correlation_matrix[row.index][idx]) for idx in indices)):
+                lowest_value = val
+                indices.update({row.index})
+    return 1-lowest_value
+
+def calculate_sigma_threshold(std_dev):
+    """Calculate sigmas threshold based on inputs""" return std_dev*(1+alpha**2)**0.5
+
+def calculate_daily_returns(dataframe):
+    """Calculate daily returns for a given dataframe""" # Shift data frame back by one day since we cannot use future data to determine returns today
+    dataframe = dataframe.dropna().shift(-1
+Calculate daily percentage change by dividing current price by yesterday's price and subtracting 1
+dataframe['Daily Return'] = (dataframe['Close'] / dataframe['Close'].shift(1)) - 1
+
+Ensure that negative daily returns are represented as numeric (-1 * x), rather than boolean False
+dataframe['Daily Return'] = np.where(dataframe['Daily Return'] >= 0, dataframe['Daily Return'], -1*dataframe['Daily Return'])
+
+return dataframe
