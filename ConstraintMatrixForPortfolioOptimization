@@ -1,0 +1,69 @@
+def create_constraint_matrix(weights, window_length):
+    """Creates a constraint matrix for either total volatility or individual sector constraints.""" if not isinstance(weights, dict):
+        raise ValueError("Weights should be a dictionary containing sector weights.") sectors = set(list(weights.keys()))
+        if len(set(list(np.where(~np.isnan(np.corrcoef(prices[:, list(sectors)]))))[0]) < min_sector_weight * len(sectors):
+            print(f"Warning: Not enough data available for all sectors ({len(sectors)}/{len(assets)}). Constraining only on sectors with sufficient data.") num_sectors = len(sectors)
+        else:
+            num_sectors = len(list(weights.items())[0][0])
+        
+        # Create covariance matrix
+        cov_mat = np.cov(prices[:, list(sectors)], rowvar=False)
+        
+        # Create diagonal variance terms
+        diag = np.diag(np.linalg.inv(cov_mat).dot(np.diag(np.square(np.sqrt(std_rets.iloc[-1])))))
+        
+        # Build constraint matrix
+        if constrain_volatility:
+            max_volatility = ((np.transpose(np.tile(np.ones(num_sectors), (len(weights), 1))) @ diag @ np.tile(np.ones(num_sectors), (len(weights), 1)).T) ** 0.5) * math.sqrt(window_length)
+            if tracking_error_constraint is not None:
+                target_volatility = (np.transpose(np.tile(np.ones(num_sectors), (len(weights), 1))) @ diag @ np.tile(np.ones(num_sectors), (len(weights), 1)).T) ** 0.5 * math.sqrt(window_length)
+                c = np.hstack([max_volatility*np.ones(len(weights)), (-target_volatility + tracking_error_constraint)*np.ones(len(weights))])
+                G = np.hstack([np.tile(np.ones(num_sectors), (len(weights), 1)).T @ diag, -np.eye(len(weights))])
+            else:
+                c = np.full((len(weights), ), max_volatility)
+                G = np.hstack([np.tile(np.ones(num_sectors), (len(weights), 1)).T @ diag, np.eye(len(weights))])
+        else:
+            c = []
+            for i, w in enumerate(list(weights.values())):
+                if sum(np.abs(np.array(weights)[i:i+1])) <= 1:
+                    sector = next(iter(sectors), None)
+                    if sector is not None:
+                        sector_indices = [i for j, s in enumerate(sectors) if s == sector][0]
+                        sector_weights = [weights[(j, k)] for k, s in enumerate(sectors) if s == sector]
+                        c.append(np.sqrt(np.dot(np.linalg.lstsq(np.stack(prices[:, sector_indices]), np.stack(sector_weights), rcond=None)[0], np.linalg.pinv(cov_mat[[sector_indices], sector_indices]).dot(sector_weights))))
+    
+    # Append equality constraint for portfolio value of one
+    h = np.zeros(len(weights))
+    g = [[1]] * len(weights)
+    H = np.identity(len(weights))
+    return G, h, c, {'type': 'lp'}
+
+# Define input parameters for portfolio optimization
+starting_portfolio = pd.Series({asset: float(x) for asset, x in zip(assets, np.random.uniform(size=(len(assets), 1)))}, name="Portfolio")
+min_sector_weight = 0.02
+constrain_volatility = True
+tracking_error_constraint = None
+window_length = 365
+dates = ['2021-01-01', '2021-12-31']
+assets = ["AAPL", "AMZN", "FB"]
+sectors = {"AAPL": "Technology", "AMZN": "Consumer Discretionary", "FB": "Technology"}
+data = fetch_stock_price(assets, dates)["Adj Close"]
+prices = data.dropna().to_frame("Price").reset_index()
+prices.columns = prices.columns.droplevel(level=0)
+prices = prices.pct_change().add(1).cumprod()[1:].dropna().tail(-window_length).astype('float').values
+prices = pd.DataFrame(prices.reshape(-1, window_length))
+std_rets = prices.mean(axis=1)**(-24) * prices.std(axis=1) / window_length**0.5
+weights = dict(zip(assets, np.random.uniform(size=(len(assets), 1)))), sector=lambda x: sectors[x['Asset'][0]])
+sectors = set(list(weights.keys()))
+if len(set(list(np.where(~np.isnan(np.corrcoef(prices[:, list(sectors)]))))[0]) < min_sector_weight * len(sectors):
+    print(f"Warning: Not enough data available for all sectors ({len(sectors)}/{len(assets)}). Constraining only on sectors with sufficient data.")
+num_sectors = len(list(weights.items())[0][0])
+...
+
+# Call optimization function
+bounds = tuple(((0.0, 1.0),) * len(weights))
+sol = minimize(lambda x: (np.sum((x - starting_portfolio) ** 2) / 2, 
+                           np.sum((np.dot(prices[:,-1], x) - start_value) ** 2) / 2),
+                 bounds=bounds, constraints={}, method='SLSQP')
+optimal_weights = sol.x / sum(sol.x)
+print(optimal_weights)
